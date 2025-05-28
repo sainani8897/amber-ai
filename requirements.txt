@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart # For file uploads (though not explicitly used for audio chunks, it's good practice for FastAPI forms)
+python-dotenv # If you're using .env files for API keys
+openai # For OpenAI's API (Whisper/GPT)
+pydub # For audio processing
+numpy # Often a dependency of pydub or audio libraries
+elevenlabs # For Eleven Labs TTS
+websockets # Although FastAPI handles it, good to list if directly interacting

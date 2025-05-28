@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AI Voice Assistant</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 20px;
+        background-color: #f4f7f6;
+        color: #333;
+      }
+      #controls {
+        margin-bottom: 30px;
+        text-align: center;
+      }
+      h1 {
+        color: #2c3e50;
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      h2 {
+        color: #34495e;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 5px;
+        margin-top: 25px;
+      }
+
+      #transcript,
+      #response {
+        white-space: pre-wrap;
+        border: 1px solid #e0e0e0;
+        padding: 15px;
+        min-height: 120px;
+        max-height: 300px;
+        overflow-y: auto;
+        background-color: #ffffff;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        margin-top: 10px;
+        line-height: 1.6;
+      }
+      #response {
+        background-color: #e8f5e9;
+      } /* Light green for bot */
+
+      #micButton {
+        padding: 25px 40px;
+        font-size: 28px;
+        cursor: pointer;
+        background-color: #4caf50; /* Green */
+        color: white;
+        border: none;
+        border-radius: 50px; /* Pill shape */
+        box-shadow: 0 6px 10px rgba(0, 0, 0, 0.2);
+        transition: background-color 0.3s ease, transform 0.1s ease,
+          box-shadow 0.3s ease;
+        outline: none; /* Remove focus outline */
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+      }
+      #micButton:active {
+        background-color: #45a049; /* Darker green on press */
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        transform: translateY(2px);
+      }
+      #micButton:disabled {
+        background-color: #cccccc;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+      .recording {
+        background-color: #f44336 !important; /* Red when recording */
+        animation: pulse-red 1.5s infinite;
+      }
+      .processing {
+        background-color: #ffa500 !important; /* Orange when processing */
+        animation: pulse-orange 1.5s infinite;
+      }
+
+      @keyframes pulse-red {
+        0% {
+          box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7);
+        }
+        70% {
+          box-shadow: 0 0 0 15px rgba(244, 67, 54, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(244, 67, 54, 0);
+        }
+      }
+      @keyframes pulse-orange {
+        0% {
+          box-shadow: 0 0 0 0 rgba(255, 165, 0, 0.7);
+        }
+        70% {
+          box-shadow: 0 0 0 15px rgba(255, 165, 0, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(255, 165, 0, 0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>AI Voice Assistant (Push-to-Talk)</h1>
+
+    <div id="controls">
+      <button id="micButton" type="button">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          width="24px"
+          height="24px"
+        >
+          <path
+            d="M12 14c1.66 0 2.99-1.34 2.99-3L15 4c0-1.66-1.34-3-3-3S9 2.34 9 4v7c0 1.66 1.34 3 3 3zm5.3-3c0 3.25-2.5 5.91-5.3 6.4V21h-2v-3.6c-2.8-.49-5.3-3.15-5.3-6.4H4c0 3.87 3.13 7.08 7 7.56V21h2v-3.44c3.87-.48 7-3.69 7-7.56h-2.7z"
+          />
+        </svg>
+        <span>Hold to Speak</span>
+      </button>
+    </div>
+
+    <h2>User Transcript:</h2>
+    <div id="transcript"></div>
+
+    <h2>Bot Response:</h2>
+    <div id="response"></div>
+
+    <script>
+      console.log("Script loaded. Initializing variables.");
+      const micButton = document.getElementById("micButton");
+      const transcriptDiv = document.getElementById("transcript");
+      const responseDiv = document.getElementById("response");
+
+      let mediaRecorder;
+      let websocket;
+      let documentMouseUpListener = null;
+      const WS_URL = "ws://localhost:8000/ws/live_audio";
+      const CHUNK_SIZE_MS = 1000;
+
+      let isRecording = false;
+      let isWaitingForServer = false;
+
+      function resetUiAndConnection() {
+        console.log("UI: Resetting UI and connection state.");
+        isRecording = false;
+        isWaitingForServer = false;
+        micButton.classList.remove("recording", "processing");
+        micButton.textContent = "Hold to Speak";
+        micButton.disabled = false;
+
+        if (documentMouseUpListener) {
+          document.removeEventListener("mouseup", documentMouseUpListener);
+          documentMouseUpListener = null;
+          console.log("UI: Removed document mouseup listener.");
+        }
+        // IMPORTANT: Do NOT close websocket here, it should remain open for next turn
+        // unless there was a fatal error or explicit disconnect.
+      }
+
+      function setupWebSocket() {
+        if (
+          websocket &&
+          (websocket.readyState === WebSocket.OPEN ||
+            websocket.readyState === WebSocket.CONNECTING)
+        ) {
+          console.log(
+            "WebSocket: Connection already open or connecting. Reusing."
+          );
+          return;
+        }
+        console.log("Attempting to create new WebSocket instance.");
+        websocket = new WebSocket(WS_URL);
+
+        websocket.onopen = () => {
+          console.log("WebSocket: Connected successfully.");
+        };
+
+        websocket.onmessage = async (event) => {
+          // Made async for potential future awaits
+          console.log(
+            "WebSocket: Message received. Data type:",
+            typeof event.data
+          );
+          if (typeof event.data === "string") {
+            if (event.data === "SERVER_DONE_TURN") {
+              console.log(
+                "WebSocket: Received SERVER_DONE_TURN. Resetting UI."
+              );
+              // Add a small delay to allow bot audio to finish playing if it hasn't yet
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              resetUiAndConnection();
+              return;
+            }
+            if (event.data === "SERVER_PROCESSING") {
+              console.log(
+                "WebSocket: Received SERVER_PROCESSING. Updating UI."
+              );
+              if (isWaitingForServer) {
+                micButton.classList.remove("recording");
+                micButton.classList.add("processing");
+                micButton.textContent = "Thinking...";
+              }
+              return;
+            }
+            if (event.data.startsWith("User: ")) {
+              transcriptDiv.textContent += event.data.substring(6) + " ";
+              transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+              console.log("WebSocket: Displayed user transcript chunk.");
+            } else if (event.data.startsWith("TechBot: ")) {
+              responseDiv.textContent += event.data.substring(9) + "\n";
+              responseDiv.scrollTop = responseDiv.scrollHeight;
+              console.log("WebSocket: Displayed bot response text.");
+            } else {
+              console.log(
+                "WebSocket: Unhandled text message from server:",
+                event.data
+              );
+            }
+          } else if (event.data instanceof Blob) {
+            console.log(
+              "WebSocket: Received audio blob (bot speech). Size:",
+              event.data.size
+            );
+            const audio = new Audio(URL.createObjectURL(event.data));
+            audio.play();
+            // Audio object might not fire 'ended' event consistently if short or connection closes.
+            // We rely on SERVER_DONE_TURN to reset UI.
+            console.log("WebSocket: Playing bot audio.");
+          }
+        };
+
+        websocket.onclose = (event) => {
+          // IMPORTANT: This will now show up as an ERROR in your console, making it very visible.
+          console.error(
+            `!!! WebSocket: CONNECTION CLOSED. Code: ${event.code}, Reason: "${event.reason}".`
+          );
+          console.groupCollapsed(
+            "WebSocket Close Event Details (Click to expand)"
+          ); // Group details for readability
+          console.error("Event object:", event);
+          console.error("Was waiting for server:", isWaitingForServer);
+          console.groupEnd();
+
+          if (isWaitingForServer) {
+            transcriptDiv.textContent += `\nConnection closed unexpectedly while waiting for response. Code: ${event.code}. Please try again.`;
+          } else {
+            transcriptDiv.textContent += `\nReady to speak. Press and hold mic button.`;
+          }
+          resetUiAndConnection(); // Ensure UI is reset on any close
+        };
+
+        websocket.onerror = (error) => {
+          // IMPORTANT: This will also show up as a CRITICAL ERROR.
+          console.error(
+            "!!! WebSocket: CRITICAL ERROR OCCURRED. See details below."
+          );
+          console.groupCollapsed(
+            "WebSocket Error Event Details (Click to expand)"
+          ); // Group details for readability
+          console.error("Error object:", error);
+          console.error("Was waiting for server:", isWaitingForServer);
+          console.groupEnd();
+
+          transcriptDiv.textContent =
+            "WebSocket Error. See console for details.";
+          responseDiv.textContent = "";
+          if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+            console.log("MediaRecorder stopped due to WebSocket error.");
+          }
+          resetUiAndConnection(); // Reset UI on error
+          // It's usually fine to close here as connection is likely broken
+          if (websocket && websocket.readyState === WebSocket.OPEN) {
+            websocket.close(); // Close the WebSocket if it was still open and an error occurred
+          }
+        };
+      }
+
+      micButton.addEventListener("mousedown", async (event) => {
+        event.preventDefault(); // Stop default button behavior
+        console.log("Mic Button: mousedown event. Default behavior prevented.");
+
+        if (isRecording || isWaitingForServer) {
+          console.log(
+            "Mic Button: Already recording or waiting, ignoring mousedown."
+          );
+          return;
+        }
+
+        isRecording = true;
+        console.log("Mic Button: Mouse down. Starting recording process.");
+
+        // Setup document-level mouseup listener
+        documentMouseUpListener = (releaseEvent) => {
+          releaseEvent.preventDefault(); // Stop default document behavior
+          console.log("Document: Mouse up detected. Default prevented.");
+          document.removeEventListener("mouseup", documentMouseUpListener);
+          documentMouseUpListener = null; // Clear listener reference
+
+          if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            console.log(
+              "MediaRecorder: Stopping recording (from document mouseup)."
+            );
+            mediaRecorder.stop(); // This triggers onstop
+          } else {
+            console.log(
+              'MediaRecorder: No active recording. Sending "END_OF_AUDIO" immediately.'
+            );
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+              try {
+                websocket.send("END_OF_AUDIO"); // Send signal for empty turn
+                console.log(
+                  'WebSocket: Sent "END_OF_AUDIO" signal for empty turn.'
+                );
+              } catch (e) {
+                console.error(
+                  "WebSocket: Failed to send END_OF_AUDIO for empty turn:",
+                  e
+                );
+              }
+            }
+            resetUiAndConnection(); // Fallback UI reset for empty turn if WS not open
+          }
+        };
+        document.addEventListener("mouseup", documentMouseUpListener);
+        console.log("Mic Button: Added document mouseup listener.");
+
+        // Update UI for recording state
+        micButton.classList.add("recording");
+        micButton.textContent = "Recording... Release to send";
+        micButton.disabled = false; // Ensure it's not disabled during recording itself
+
+        transcriptDiv.textContent = "";
+        responseDiv.textContent = "";
+
+        setupWebSocket(); // Ensure WebSocket connection is established or re-established
+
+        // Wait for WebSocket to open before starting MediaRecorder
+        try {
+          await new Promise((resolve, reject) => {
+            if (websocket.readyState === WebSocket.OPEN) {
+              console.log(
+                "WebSocket: Already open. Proceeding with recording."
+              );
+              resolve();
+            } else if (websocket.readyState === WebSocket.CONNECTING) {
+              websocket.onopen = () => {
+                console.log(
+                  "WebSocket: Connected successfully. Proceeding with recording."
+                );
+                resolve();
+              };
+              websocket.onerror = (e) => {
+                console.error("WebSocket: Connection error during setup:", e);
+                reject(e);
+              };
+            } else {
+              // WebSocket is CLOSED or CLOSING - attempt re-setup
+              setupWebSocket(); // Call again to trigger a fresh connection
+              websocket.onopen = () => {
+                console.log(
+                  "WebSocket: Re-connected successfully. Proceeding with recording."
+                );
+                resolve();
+              };
+              websocket.onerror = (e) => {
+                console.error(
+                  "WebSocket: Re-connection error during setup:",
+                  e
+                );
+                reject(e);
+              };
+            }
+          });
+        } catch (err) {
+          console.error(
+            "ERROR: Failed to establish WebSocket connection before recording:",
+            err
+          );
+          transcriptDiv.textContent = `ERROR: Failed to connect to server. Details in console.`;
+          resetUiAndConnection();
+          // If WS failed to open, close it for a clean slate, if it's not already closed
+          if (websocket && websocket.readyState !== WebSocket.CLOSED) {
+            websocket.close();
+          }
+          return; // Exit mousedown handler
+        }
+
+        // Get microphone access and start MediaRecorder
+        try {
+          console.log("Microphone: Requesting access via getUserMedia.");
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          console.log("Microphone: Access granted. Stream obtained.");
+
+          const supportedMimeType = MediaRecorder.isTypeSupported(
+            "audio/webm;codecs=opus"
+          )
+            ? "audio/webm;codecs=opus"
+            : "audio/webm";
+          if (supportedMimeType === "audio/webm") {
+            console.warn(
+              "Microphone: audio/webm;codecs=opus not fully supported, falling back to audio/webm."
+            );
+          }
+          mediaRecorder = new MediaRecorder(stream, {
+            mimeType: supportedMimeType,
+          });
+          console.log(
+            "MediaRecorder: Instance created with mimeType:",
+            supportedMimeType
+          );
+
+          mediaRecorder.ondataavailable = (event) => {
+            if (
+              event.data.size > 0 &&
+              websocket.readyState === WebSocket.OPEN &&
+              isRecording
+            ) {
+              try {
+                websocket.send(event.data);
+                console.log(
+                  "MediaRecorder: Data available event fired. Sending Blob size:",
+                  event.data.size
+                );
+              } catch (e) {
+                console.error("WebSocket: Failed to send audio chunk:", e);
+                // If sending fails, assume connection is bad and stop recording/reset
+                if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                  mediaRecorder.stop();
+                }
+                resetUiAndConnection();
+              }
+            } else if (event.data.size === 0) {
+              console.warn(
+                "MediaRecorder: Received empty audio blob from ondataavailable."
+              );
+            } else {
+              console.log(
+                "MediaRecorder: Data available, but not sending (WS not open or not recording)."
+              );
+            }
+          };
+
+          mediaRecorder.onstop = () => {
+            console.log(
+              "MediaRecorder: Recording stopped event. Setting waiting state."
+            );
+            isRecording = false;
+            isWaitingForServer = true;
+            micButton.classList.remove("recording");
+            micButton.classList.add("processing");
+            micButton.textContent = "Processing...";
+            micButton.disabled = true; // CRITICAL: Disable button while waiting for server
+
+            stream.getTracks().forEach((track) => track.stop());
+            console.log("Microphone stream tracks stopped.");
+
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+              try {
+                websocket.send("END_OF_AUDIO");
+                console.log(
+                  'WebSocket: Sent "END_OF_AUDIO" signal from onstop.'
+                );
+              } catch (e) {
+                console.error(
+                  "WebSocket: Failed to send END_OF_AUDIO from onstop:",
+                  e
+                );
+                // If sending fails here, connection is likely dead, so reset UI
+                resetUiAndConnection();
+              }
+            } else {
+              console.warn(
+                "WebSocket: Not open to send END_OF_AUDIO from onstop."
+              );
+              resetUiAndConnection(); // If WS not open, reset UI as we can't communicate
+            }
+          };
+
+          mediaRecorder.start(CHUNK_SIZE_MS);
+          console.log(
+            "MediaRecorder: Started recording and will emit data every (ms):",
+            CHUNK_SIZE_MS
+          );
+        } catch (err) {
+          console.error(
+            "ERROR: Could not access microphone or MediaRecorder setup failed.",
+            err
+          );
+          transcriptDiv.textContent = `ERROR: Microphone access denied or setup failed. Details in console.`;
+          resetUiAndConnection();
+          if (websocket && websocket.readyState !== WebSocket.CLOSED) {
+            websocket.close();
+          }
+        }
+      });
+
+      micButton.addEventListener("mouseleave", (event) => {
+        if (event.buttons === 1 && isRecording) {
+          console.log(
+            "Mic Button: Mouse left button while pressed. Simulating mouseup."
+          );
+          document.dispatchEvent(
+            new MouseEvent("mouseup", {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+            })
+          );
+        }
+      });
+
+      console.log("Script execution flow initialized.");
+    </script>
+  </body>
+</html>
