@@ -23,7 +23,7 @@ This is a real-time, push-to-talk AI Voice Assistant that leverages OpenAI's Whi
 ### 1. Clone the Repository
 
 ```bash
-git clone [<your-repository-url>](https://github.com/sainani8897/amber-ai)
+git clone https://github.com/sainani8897/amber-ai.git
 cd amber
 ```
 
