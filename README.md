@@ -1,6 +1,6 @@
 # AI Voice Assistant
 
-This is a real-time, push-to-talk AI Voice Assistant that leverages OpenAI's Whisper for Speech-to-Text (STT), a Large Language Model (LLM) (e.g., GPT-3.5/4) for conversational responses, and Eleven Labs for Text-to-Speech (TTS). The application uses FastAPI for the backend WebSocket communication and a simple HTML/JavaScript frontend for the user interface.
+This is a real-time, push-to-talk AI Voice Assistant that leverages OpenAI's Whisper for Speech-to-Text (STT), a Large Language Model (LLM) (e.g., GPT-3.5/4) for conversational responses, and Eleven Labs for Text-to-Speech (TTS). The application uses FastAPI for the backend WebSocket communication and a simple HTML/JavaScript frontend for the user interface.https://github.com/sainani8897/amber-ai/blob/main/README.md
 
 ## Features
 
